@@ -10,8 +10,9 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
-	"net/http/httputil"
+	"net/url"
 	"runtime"
+	"strings"
 	"time"
 )
 
@@ -41,37 +42,33 @@ type handler struct {
 func (h handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	var productionRequest, alternativeRequest *http.Request
 	if *percent == 100.0 || h.Randomizer.Float64()*100 < *percent {
-		alternativeRequest, productionRequest = DuplicateRequest(req)
+		alternativeRequest, productionRequest = duplicateRequest(req)
 		go func() {
 			defer func() {
 				if r := recover(); r != nil && *debug {
 					fmt.Println("Recovered in f", r)
 				}
 			}()
-			// Open new TCP connection to the server
-			clientTcpConn, err := net.DialTimeout("tcp", h.Alternative, time.Duration(time.Duration(*alternateTimeout)*time.Second))
+
+			targetURLString := h.Alternative + alternativeRequest.URL.String()
+
+			if strings.HasPrefix(strings.ToLower(targetURLString), "http") == false {
+				targetURLString = "http://" + targetURLString
+			}
+
+			targetURL, err := url.Parse(targetURLString)
 			if err != nil {
-				if *debug {
-					fmt.Printf("Failed to connect to %s\n", h.Alternative)
-				}
+				fmt.Printf("Unable to parse target URL: %s\n", err.Error())
 				return
 			}
-			clientHttpConn := httputil.NewClientConn(clientTcpConn, nil) // Start a new HTTP connection on it
-			defer clientHttpConn.Close()                                 // Close the connection to the server
-			if *alternateHostRewrite {
-				alternativeRequest.Host = h.Alternative
-			}
-			err = clientHttpConn.Write(alternativeRequest) // Pass on the request
+
+			client := &http.Client{}
+			alternativeRequest.URL = targetURL
+			_, err = client.Do(alternativeRequest)
+
 			if err != nil {
 				if *debug {
-					fmt.Printf("Failed to send to %s: %v\n", h.Alternative, err)
-				}
-				return
-			}
-			_, err = clientHttpConn.Read(alternativeRequest) // Read back the reply
-			if err != nil {
-				if *debug {
-					fmt.Printf("Failed to receive from %s: %v\n", h.Alternative, err)
+					fmt.Printf("Failed to Do request: %s\n", err.Error())
 				}
 				return
 			}
@@ -85,30 +82,26 @@ func (h handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 	}()
 
-	// Open new TCP connection to the server
-	clientTcpConn, err := net.DialTimeout("tcp", h.Target, time.Duration(time.Duration(*productionTimeout)*time.Second))
+	targetURLString := h.Target + productionRequest.URL.String()
+
+	if strings.HasPrefix(strings.ToLower(targetURLString), "http") == false {
+		targetURLString = "http://" + targetURLString
+	}
+
+	targetURL, err := url.Parse(targetURLString)
 	if err != nil {
-		fmt.Printf("Failed to connect to %s\n", h.Target)
+		fmt.Printf("Unable to parse target URL: %s\n", err.Error())
 		return
 	}
-	clientHttpConn := httputil.NewClientConn(clientTcpConn, nil) // Start a new HTTP connection on it
-	defer clientHttpConn.Close()                                 // Close the connection to the server
-	if *productionHostRewrite {
-		productionRequest.Host = h.Target
-	}
-	err = clientHttpConn.Write(productionRequest) // Pass on the request
+
+	client := &http.Client{}
+	productionRequest.URL = targetURL
+	resp, err := client.Do(productionRequest)
 	if err != nil {
-		fmt.Printf("Failed to send to %s: %v\n", h.Target, err)
+		fmt.Printf("Failed to Do request: %s\n", err.Error())
 		return
 	}
-	resp, err := clientHttpConn.Read(productionRequest) // Read back the reply
-	if err != nil {
-		fmt.Printf("Failed to receive from %s: %v\n", h.Target, err)
-		return
-	}
-	for k, v := range resp.Header {
-		w.Header()[k] = v
-	}
+
 	w.WriteHeader(resp.StatusCode)
 	body, _ := ioutil.ReadAll(resp.Body)
 	w.Write(body)
@@ -158,7 +151,7 @@ type nopCloser struct {
 
 func (nopCloser) Close() error { return nil }
 
-func DuplicateRequest(request *http.Request) (request1 *http.Request, request2 *http.Request) {
+func duplicateRequest(request *http.Request) (request1 *http.Request, request2 *http.Request) {
 	b1 := new(bytes.Buffer)
 	b2 := new(bytes.Buffer)
 	w := io.MultiWriter(b1, b2)
