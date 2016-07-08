@@ -58,7 +58,9 @@ func (h handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 			targetURL, err := url.Parse(targetURLString)
 			if err != nil {
-				fmt.Printf("Unable to parse target URL: %s\n", err.Error())
+				if *debug {
+					fmt.Printf("Unable to parse target URL: %s\n", err.Error())
+				}
 				return
 			}
 
@@ -68,7 +70,7 @@ func (h handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 			if err != nil {
 				if *debug {
-					fmt.Printf("Failed to Do request: %s\n", err.Error())
+					fmt.Printf("Failed to receive from %s: %v\n", h.Alternative, err)
 				}
 				return
 			}
@@ -98,8 +100,12 @@ func (h handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	productionRequest.URL = targetURL
 	resp, err := client.Do(productionRequest)
 	if err != nil {
-		fmt.Printf("Failed to Do request: %s\n", err.Error())
+		fmt.Printf("Failed to receive from %s: %v\n", h.Target, err)
 		return
+	}
+
+	for k, v := range resp.Header {
+		w.Header()[k] = v
 	}
 
 	w.WriteHeader(resp.StatusCode)
